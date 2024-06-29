@@ -28,8 +28,7 @@ A_TrayMenu.ClickCount := 1
 
 ; Initialize internal states
 IconState := -1
-Global Screen := 0
-; Global LastTaskbarScroll := 0
+Global ScreenIndex := 0
 
 ; Start the komorebi server
 if (ProcessExist("komorebi.exe") == 0 && AutoStartKomorebi) {
@@ -108,12 +107,12 @@ Loop {
     State := JSON.Load(StrGet(Data, Bytes, "UTF-8"))["state"]
     IsPaused := State["is_paused"]
     ScreenIndex := State["monitors"]["focused"]
-    ScreenQ := State["monitors"]["elements"][Screen + 1]
+    ScreenQ := State["monitors"]["elements"][ScreenIndex + 1]
     WorkspaceIndex := ScreenQ["workspaces"]["focused"]
-    WorkspaceQ := ScreenQ["workspaces"]["elements"][Workspace + 1]
+    WorkspaceQ := ScreenQ["workspaces"]["elements"][WorkspaceIndex + 1]
 
     ; Update tray icon
-    If (IsPaused | Screen << 1 | Workspace << 4 != IconState) {
+    If (IsPaused | ScreenIndex << 1 | WorkspaceIndex << 4 != IconState) {
         UpdateIcon(
             IsPaused,
             ScreenIndex,
@@ -122,7 +121,7 @@ Loop {
             WorkspaceQ["name"],
         )
         ; use 3 bits for monitor (i.e. up to 8 monitors)
-        IconState := IsPaused | Screen << 1 | Workspace << 4
+        IconState := IsPaused | ScreenIndex << 1 | WorkspaceIndex << 4
     }
 }
 Return
