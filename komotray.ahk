@@ -1,38 +1,40 @@
-#SingleInstance, force
-#NoEnv
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+Persistent
 
-#Include, %A_ScriptDir%\lib\JSON.ahk
+#Include <JSON>
+
+#Include "./config/komorebi.ahk"
 
 ; Set common config options
 AutoStartKomorebi := true
-global IconPath := A_ScriptDir . "/assets/icons/"
-global KomorebiConfig := A_ScriptDir . "/komorebi-config/komorebi.json"
+Global IconDir := A_ScriptDir . "/assets/icons"
+Global ConfigPath := A_ScriptDir . "/config/komorebi.json"
 
 ; ======================================================================
 ; Initialization
 ; ======================================================================
 
 ; Set up tray menu
-Menu, Tray, NoStandard
-Menu, Tray, add, Pause Komorebi, PauseKomorebi
-Menu, Tray, add, Restart Komorebi, StartKomorebi
-Menu, Tray, add  ; separator line
-Menu, Tray, add, Reload Tray, ReloadTray
-Menu, Tray, add, Exit Tray, ExitTray
-
+A_TrayMenu.Delete()
+A_TrayMenu.Add("Pause Komorebi", PauseKomorebi)
+A_TrayMenu.Add("Restart Komorebi", RestartKomorebi)
+A_TrayMenu.Add()
+A_TrayMenu.Add("Reload Tray", ReloadTray)
+A_TrayMenu.Add("Exit Tray", ExitTray)
 ; Define default action and activate it with single click
-Menu, Tray, Default, Pause Komorebi
-Menu, Tray, Click, 1
+A_TrayMenu.Default := "Pause Komorebi"
+A_TrayMenu.ClickCount := 1
 
 ; Initialize internal states
 IconState := -1
-global Screen := 0
-global LastTaskbarScroll := 0
+Global Screen := 0
+; Global LastTaskbarScroll := 0
 
 ; Start the komorebi server
-Process, Exist, komorebi.exe
-if (!ErrorLevel && AutoStartKomorebi)
-    StartKomorebi(false)
+if (ProcessExist("komorebi.exe") == 0 && AutoStartKomorebi) {
+    StartKomorebi()
+}
 
 ; ======================================================================
 ; Event Handler
@@ -46,133 +48,123 @@ PipeMode := 0x04 | 0x02 | 0x01  ; type_message | readmode_message | nowait
 BufferSize := 64 * 1024
 
 ; Create named pipe instance
-Pipe := DllCall("CreateNamedPipe", "Str", PipePath, "UInt", OpenMode, "UInt", PipeMode
-    , "UInt", 1, "UInt", BufferSize, "UInt", BufferSize, "UInt", 0, "Ptr", 0, "Ptr")
-if (Pipe = -1) {
-    MsgBox, % "CreateNamedPipe: " A_LastError
+Pipe := DllCall(
+    "CreateNamedPipe",
+    "Str", PipePath,
+    "UInt", OpenMode,
+    "UInt", PipeMode,
+    "UInt", 1,
+    "UInt", BufferSize,
+    "UInt", BufferSize,
+    "UInt", 0,
+    "Ptr", 0,
+    "Ptr",
+)
+If (Pipe = -1) {
+    MsgBox("CreateNamedPipe: " . A_LastError)
     ExitTray()
 }
 
 ; Wait for Komorebi to connect
-Komorebi("subscribe " . PipeName)
-DllCall("ConnectNamedPipe", "Ptr", Pipe, "Ptr", 0) ; set PipeMode = nowait to avoid getting stuck when paused
+Komorebic("subscribe " . PipeName)
+; set PipeMode = nowait to avoid getting stuck when paused
+DllCall("ConnectNamedPipe", "Ptr", Pipe, "Ptr", 0)
 
 ; Subscribe to Komorebi events
+BytesToRead := 0
+Bytes := 0
 Loop {
     ; Continue if buffer is empty
-    ExitCode := DllCall("PeekNamedPipe", "Ptr", Pipe, "Ptr", 0, "UInt", 1
-        , "Ptr", 0, "UintP", BytesToRead, "Ptr", 0)
-    if (!ExitCode || !BytesToRead) {
-        Sleep, 50
+    ExitCode := DllCall(
+        "PeekNamedPipe",
+        "Ptr", Pipe,
+        "Ptr", 0,
+        "UInt", 1,
+        "Ptr", 0,
+        "UintP", &BytesToRead,
+        "Ptr", 0,
+    )
+    If (!ExitCode || !BytesToRead) {
+        Sleep 50
         Continue
     }
 
     ; Read the buffer
-    VarSetCapacity(Data, BufferSize, 0 )
-    DllCall("ReadFile", "Ptr", Pipe, "Str", Data, "UInt", BufferSize
-        , "PtrP", Bytes, "Ptr", 0)
+    Data := Buffer(BufferSize, 0)
+    DllCall(
+        "ReadFile",
+        "Ptr", Pipe,
+        "Ptr", Data.Ptr,
+        "UInt", BufferSize,
+        "UintP", &Bytes,
+        "Ptr", 0,
+    )
 
     ; Strip new lines
-    if (Bytes <= 1)
+    If (Bytes <= 1) {
         Continue
+    }
 
-    State := JSON.Load(StrGet(&Data, Bytes, "UTF-8")).state
-    Paused := State.is_paused
-    Screen := State.Monitors.focused
-    ScreenQ := State.Monitors.elements[Screen + 1]
-    Workspace := ScreenQ.workspaces.focused
-    WorkspaceQ := ScreenQ.workspaces.elements[Workspace + 1]
+    State := JSON.Load(StrGet(Data, Bytes, "UTF-8"))["state"]
+    IsPaused := State["is_paused"]
+    ScreenIndex := State["monitors"]["focused"]
+    ScreenQ := State["monitors"]["elements"][Screen + 1]
+    WorkspaceIndex := ScreenQ["workspaces"]["focused"]
+    WorkspaceQ := ScreenQ["workspaces"]["elements"][Workspace + 1]
 
     ; Update tray icon
-    if (Paused | Screen << 1 | Workspace << 4 != IconState) {
-        UpdateIcon(Paused, Screen, Workspace, ScreenQ.name, WorkspaceQ.name)
-        IconState := Paused | Screen << 1 | Workspace << 4 ; use 3 bits for monitor (i.e. up to 8 monitors)
+    If (IsPaused | Screen << 1 | Workspace << 4 != IconState) {
+        UpdateIcon(
+            IsPaused,
+            ScreenIndex,
+            WorkspaceIndex,
+            ScreenQ["name"],
+            WorkspaceQ["name"],
+        )
+        ; use 3 bits for monitor (i.e. up to 8 monitors)
+        IconState := IsPaused | Screen << 1 | Workspace << 4
     }
 }
 Return
 
 ; ======================================================================
-; Key Bindings
-; ======================================================================
-
-; Load key bindings
-#Include, %A_ScriptDir%\komorebi-config\bindings.ahk
-
-; Alt + scroll to cycle workspaces
-!WheelUp::ScrollWorkspace("previous")
-!WheelDown::ScrollWorkspace("next")
-
-; Scroll taskbar to cycle workspaces
-#if MouseIsOver("ahk_class Shell_TrayWnd") || MouseIsOver("ahk_class Shell_SecondaryTrayWnd")
-    WheelUp::ScrollWorkspace("previous")
-    WheelDown::ScrollWorkspace("next")
-#if
-
-; ======================================================================
 ; Functions
 ; ======================================================================
 
-Komorebi(arg) {
-    RunWait % "komorebic.exe " . arg,, Hide
+StartKomorebi() {
+    Global
+    Komorebic("stop")
+    Komorebic("start -c " . ConfigPath)
 }
 
-StartKomorebi(reloadTray:=true) {
-    Komorebi("stop")
-    Komorebi("start -c " . KomorebiConfig)
-    if (reloadTray)
-        ReloadTray()
+RestartKomorebi(*) {
+    StartKomorebi()
+    ReloadTray()
 }
 
-PauseKomorebi() {
-    Komorebi("toggle-pause")
+PauseKomorebi(*) {
+    Komorebic("toggle-pause")
 }
 
-SwapScreens() {
-    ; Swap monitors on a 2 screen setup. ToDo: Add safeguard for 3+ monitors
-    Komorebi("swap-workspaces-with-monitor " . 1 - Screen)
+UpdateIcon(IsPaused, ScreenIndex, WorkspaceIndex, ScreenName, WorkspaceName) {
+    A_IconTip := Format("{} on {}", WorkspaceName, ScreenName)
+    IconPath := Format(
+        "{}\{}-{}.ico", IconDir, WorkspaceIndex + 1, ScreenIndex + 1
+    )
+    If (!IsPaused && FileExist(IconPath)) {
+        TraySetIcon IconPath
+    } else {
+        TraySetIcon Format("{}\pause.ico", IconDir)  ; also used as fallback
+    }
 }
 
-UpdateIcon(paused, screen, workspace, screenName, workspaceName) {
-    Menu, Tray, Tip, % workspaceName . " on " . screenName
-    icon := IconPath . workspace + 1 . "-" . screen + 1 . ".ico"
-    if (!paused && FileExist(icon))
-        Menu, Tray, Icon, %icon%
-    else
-        Menu, Tray, Icon, % IconPath . "pause.ico" ; also used as fallback
-}
-
-ReloadTray() {
+ReloadTray(*) {
     DllCall("CloseHandle", "Ptr", Pipe)
     Reload
 }
 
-ExitTray() {
+ExitTray(*) {
     DllCall("CloseHandle", "Ptr", Pipe)
-    Komorebi("stop")
+    Komorebic("stop")
     ExitApp
 }
-
-ScrollWorkspace(dir) {
-    ; This adds a state-dependent debounce timer to adress an issue where a single wheel
-    ; click spawns multiple clicks when a web browser is in focus.
-    _isBrowser := WinActive("ahk_class Chrome_WidgetWin_1") || WinActive("ahk_class MozillaWindowClass")
-    _t := _isBrowser ? 800 : 100
-    ; Total debounce time = _t[this_call] + _t[last_call] to address interim focus changes
-    if (A_PriorKey != A_ThisHotkey) || (A_TickCount - LastTaskbarScroll > _t) {
-        LastTaskbarScroll := A_TickCount + _t
-        Komorebi("mouse-follows-focus disable")
-        Komorebi("cycle-workspace " . dir)
-        ; ToDo: only re-enable if it was enabled before
-        Komorebi("mouse-follows-focus enable")
-    }
-}
-
-; ======================================================================
-; Auxiliary Functions
-; ======================================================================
-
-MouseIsOver(WinTitle) {
-    MouseGetPos,,, Win
-    return WinExist(WinTitle . " ahk_id " . Win)
-}
-
